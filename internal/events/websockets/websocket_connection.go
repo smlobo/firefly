@@ -31,7 +31,9 @@ import (
 	"github.com/hyperledger-firefly/common/pkg/i18n"
 	"github.com/hyperledger-firefly/common/pkg/log"
 	"github.com/hyperledger-firefly/firefly/internal/coremsgs"
+	"github.com/hyperledger-firefly/firefly/internal/telemetry"
 	"github.com/hyperledger-firefly/firefly/pkg/core"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type websocketStartedSub struct {
@@ -240,6 +242,7 @@ func (wc *websocketConnection) receiveLoop() {
 }
 
 func (wc *websocketConnection) dispatch(event *core.EventDelivery) error {
+	traceEventDelivery(event)
 	inflight := &core.EventDeliveryResponse{
 		ID:           event.ID,
 		Subscription: event.Subscription,
@@ -280,6 +283,7 @@ func (wc *websocketConnection) dispatchBatch(sub *core.Subscription, events []*c
 			inflightBatch.Subscription = e.Event.Subscription
 		}
 		inflightBatch.Events[i] = e.Event
+		traceEventDelivery(e.Event)
 	}
 
 	var autoAck bool
@@ -300,6 +304,27 @@ func (wc *websocketConnection) dispatchBatch(sub *core.Subscription, events []*c
 	}
 
 	return nil
+}
+
+// traceEventDelivery starts a new trace for an asynchronously delivered event
+// and places its W3C context on the event payload for the receiving service.
+func traceEventDelivery(event *core.EventDelivery) {
+	if event == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("firefly.event.type", event.Type.String()),
+		attribute.String("firefly.event.namespace", event.Namespace),
+	}
+	if event.ID != nil {
+		attrs = append(attrs, attribute.String("firefly.event.id", event.ID.String()))
+	}
+	if event.EnrichedEvent.Event.Transaction != nil {
+		attrs = append(attrs, attribute.String("firefly.transaction.id", event.EnrichedEvent.Event.Transaction.String()))
+	}
+	ctx, span := telemetry.StartRootSpan(context.Background(), "firefly.websocket.event", attrs...)
+	event.TraceParent = telemetry.TraceParent(ctx)
+	span.End()
 }
 
 func (wc *websocketConnection) ackBatch(batch *core.WSEventBatch) {

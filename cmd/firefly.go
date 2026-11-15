@@ -34,6 +34,7 @@ import (
 	"github.com/hyperledger-firefly/firefly/internal/apiserver"
 	"github.com/hyperledger-firefly/firefly/internal/coreconfig"
 	"github.com/hyperledger-firefly/firefly/internal/namespace"
+	"github.com/hyperledger-firefly/firefly/internal/telemetry"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -139,6 +140,20 @@ func run() error {
 	if err != nil {
 		cancelRootCtx()
 		return i18n.WrapError(rootCtx, err, i18n.MsgConfigFailed)
+	}
+
+	// Initialize OTel to OTLP/HTTP exporting. Use OTEL_EXPORTER_OTLP_ENDPOINT, else http://localhost:4318
+	if err = telemetry.Init(rootCtx); err != nil {
+		log.L(rootCtx).Warnf("Unable to initialize OpenTelemetry tracing: %s", err)
+	} else {
+		// Flush OTel spans on exit
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if shutdownErr := telemetry.Shutdown(shutdownCtx); shutdownErr != nil {
+				log.L(rootCtx).Warnf("Unable to flush OpenTelemetry traces: %s", shutdownErr)
+			}
+		}()
 	}
 
 	// Setup signal handling to cancel the context, which shuts down the API Server

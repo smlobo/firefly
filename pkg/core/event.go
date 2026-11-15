@@ -97,6 +97,9 @@ type EnrichedEvent struct {
 type EventDelivery struct {
 	EnrichedEvent
 	Subscription SubscriptionRef `json:"subscription"`
+	// TraceParent is a W3C trace context created by FireFly for this event
+	// delivery. WebSocket consumers can extract it to continue the async trace.
+	TraceParent string `json:"traceparent,omitempty"`
 }
 
 type CombinedEventDataDelivery struct {

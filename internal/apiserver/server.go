@@ -214,48 +214,28 @@ func (as *apiServer) routeHandler(hf *ffapi.HandlerFactory, mgr namespace.Manage
 	// We extend the base ffapi functionality, with standardized DB filter support for all core resources.
 	// We also pass the Orchestrator context through
 	ce := route.Extensions.(*coreExtensions)
+	// Trace JSON and form-upload requests through FireFly's route logic, including authorization failures.
 	route.JSONHandler = func(r *ffapi.APIRequest) (output interface{}, err error) {
-		or, err := getOrchestrator(r.Req.Context(), mgr, route.Tag, r)
-		if err != nil {
-			return nil, err
-		}
-
-		// Authorize the request
-		authReq := &fftypes.AuthReq{
-			Method: r.Req.Method,
-			URL:    r.Req.URL,
-			Header: r.Req.Header,
-		}
-		if or != nil {
-			if err := or.Authorize(r.Req.Context(), authReq); err != nil {
-				return nil, err
-			}
-		}
-
-		if ce.EnabledIf != nil && !ce.EnabledIf(or) {
-			return nil, i18n.NewError(r.Req.Context(), coremsgs.MsgActionNotSupported)
-		}
-
-		apiBaseURL := fixedBaseURL // for SPI
-		if apiBaseURL == "" {
-			apiBaseURL = as.getBaseURL(r.Req)
-		}
-		cr := &coreRequest{
-			mgr:        mgr,
-			or:         or,
-			ctx:        r.Req.Context(),
-			apiBaseURL: apiBaseURL,
-		}
-		return ce.CoreJSONHandler(r, cr)
-	}
-	if ce.CoreFormUploadHandler != nil {
-		route.FormUploadHandler = func(r *ffapi.APIRequest) (output interface{}, err error) {
-			or, err := getOrchestrator(r.Req.Context(), mgr, route.Tag, r)
+		return traceAPIRequest(r, route.Name, func(ctx context.Context) (interface{}, error) {
+			or, err := getOrchestrator(ctx, mgr, route.Tag, r)
 			if err != nil {
 				return nil, err
 			}
+
+			// Authorize the request
+			authReq := &fftypes.AuthReq{
+				Method: r.Req.Method,
+				URL:    r.Req.URL,
+				Header: r.Req.Header,
+			}
+			if or != nil {
+				if err := or.Authorize(ctx, authReq); err != nil {
+					return nil, err
+				}
+			}
+
 			if ce.EnabledIf != nil && !ce.EnabledIf(or) {
-				return nil, i18n.NewError(r.Req.Context(), coremsgs.MsgActionNotSupported)
+				return nil, i18n.NewError(ctx, coremsgs.MsgActionNotSupported)
 			}
 
 			apiBaseURL := fixedBaseURL // for SPI
@@ -265,10 +245,35 @@ func (as *apiServer) routeHandler(hf *ffapi.HandlerFactory, mgr namespace.Manage
 			cr := &coreRequest{
 				mgr:        mgr,
 				or:         or,
-				ctx:        r.Req.Context(),
+				ctx:        ctx,
 				apiBaseURL: apiBaseURL,
 			}
-			return ce.CoreFormUploadHandler(r, cr)
+			return ce.CoreJSONHandler(r, cr)
+		})
+	}
+	if ce.CoreFormUploadHandler != nil {
+		route.FormUploadHandler = func(r *ffapi.APIRequest) (output interface{}, err error) {
+			return traceAPIRequest(r, route.Name, func(ctx context.Context) (interface{}, error) {
+				or, err := getOrchestrator(ctx, mgr, route.Tag, r)
+				if err != nil {
+					return nil, err
+				}
+				if ce.EnabledIf != nil && !ce.EnabledIf(or) {
+					return nil, i18n.NewError(ctx, coremsgs.MsgActionNotSupported)
+				}
+
+				apiBaseURL := fixedBaseURL // for SPI
+				if apiBaseURL == "" {
+					apiBaseURL = as.getBaseURL(r.Req)
+				}
+				cr := &coreRequest{
+					mgr:        mgr,
+					or:         or,
+					ctx:        ctx,
+					apiBaseURL: apiBaseURL,
+				}
+				return ce.CoreFormUploadHandler(r, cr)
+			})
 		}
 	}
 	return hf.RouteHandler(route)

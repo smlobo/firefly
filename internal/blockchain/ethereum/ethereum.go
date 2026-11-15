@@ -38,11 +38,14 @@ import (
 	"github.com/hyperledger-firefly/firefly/internal/coreconfig"
 	"github.com/hyperledger-firefly/firefly/internal/coremsgs"
 	"github.com/hyperledger-firefly/firefly/internal/metrics"
+	"github.com/hyperledger-firefly/firefly/internal/telemetry"
 	"github.com/hyperledger-firefly/firefly/pkg/blockchain"
 	"github.com/hyperledger-firefly/firefly/pkg/core"
 	"github.com/hyperledger-firefly/signer/pkg/abi"
 	"github.com/hyperledger-firefly/signer/pkg/ffi2abi"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 const (
@@ -613,12 +616,26 @@ func (e *Ethereum) invokeContractMethod(ctx context.Context, address, signingKey
 	if err != nil {
 		return true, err
 	}
+	// Trace the EVMConnect submission as a child span and propagate its context downstream.
+	ctx, span := telemetry.StartClientSpan(ctx, "evmconnect.submit_transaction",
+		attribute.String("rpc.system", "evmconnect"),
+		attribute.String("rpc.method", messageType),
+		attribute.String("firefly.operation.id", requestID),
+	)
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	var resErr common.BlockchainRESTError
-	res, err := e.client.R().
+	carrier := propagation.MapCarrier{}
+	telemetry.InjectTraceContext(ctx, carrier)
+	request := e.client.R().
 		SetContext(ctx).
 		SetBody(body).
-		SetError(&resErr).
-		Post("/")
+		SetError(&resErr)
+	// Add the injected trace context to the outbound request headers.
+	for key, value := range carrier {
+		request.SetHeader(key, value)
+	}
+	res, err := request.Post("/")
 	if err != nil || !res.IsSuccess() {
 		// 409 is a conflict error, so that means the transaction was already submitted / exists
 		// so we can return a success w/o error
