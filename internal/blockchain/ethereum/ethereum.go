@@ -657,12 +657,27 @@ func (e *Ethereum) queryContractMethod(ctx context.Context, address, signingKey 
 	if err != nil {
 		return nil, err
 	}
+	// Trace the EVMConnect query as a child span and propagate its context downstream.
+	ctx, span := telemetry.StartClientSpan(ctx, "evmconnect.query",
+		attribute.String("rpc.system", "evmconnect"),
+		attribute.String("rpc.method", messageType),
+		attribute.String("firefly.contract.address", address),
+		attribute.String("firefly.contract.method", abi.Name),
+	)
+	defer func() { telemetry.EndSpan(span, err) }()
+
 	var resErr common.BlockchainRESTError
-	res, err := e.client.R().
+	carrier := propagation.MapCarrier{}
+	telemetry.InjectTraceContext(ctx, carrier)
+	request := e.client.R().
 		SetContext(ctx).
 		SetBody(body).
-		SetError(&resErr).
-		Post("/")
+		SetError(&resErr)
+	// Add the injected trace context to the outbound request headers.
+	for key, value := range carrier {
+		request.SetHeader(key, value)
+	}
+	res, err := request.Post("/")
 	if err != nil || !res.IsSuccess() {
 		return res, common.WrapRESTError(ctx, &resErr, res, err, coremsgs.MsgEthConnectorRESTErr)
 	}
